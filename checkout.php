@@ -1,104 +1,186 @@
 <?php
 session_start();
+
+require_once "includes/helpers.php";
 require_once "config/database.php";
 
-if (empty($_SESSION["cart"]) || !is_array($_SESSION["cart"])) {
-    header("Location: cart.php");
-    exit;
+if (!isset($_SESSION['cart']) || !is_array($_SESSION['cart'])) {
+    $_SESSION['cart'] = [];
 }
 
-$items = [];
-$subtotal = 0;
-foreach ($_SESSION["cart"] as $productId => $storedQuantity) {
-    $productId = (int)$productId;
-    $qty = max(1, min(99, (int)$storedQuantity));
-    $stmt = mysqli_prepare($conn, "SELECT id, name, price FROM products WHERE id = ?");
-    mysqli_stmt_bind_param($stmt, "i", $productId);
-    mysqli_stmt_execute($stmt);
-    $row = mysqli_stmt_get_result($stmt)->fetch_assoc();
-    mysqli_stmt_close($stmt);
+$message   = "";
+$cartItems = [];
+$subtotal  = 0;
 
-    if (!$row) {
-        unset($_SESSION["cart"][$productId]);
+// Diskon 10% hanya untuk pelanggan yang login.
+$isCustomer = isset($_SESSION['user_id'])
+    && ($_SESSION['user_role'] ?? '') === 'customer';
+
+// Ambil ulang harga dari database (jangan percaya data dari browser).
+foreach ($_SESSION['cart'] as $productId => $quantity) {
+    $productId = (int) $productId;
+    $quantity  = (int) $quantity;
+
+    if ($productId <= 0 || $quantity <= 0) {
         continue;
     }
 
-    $row["quantity"] = $qty;
-    $row["line_total"] = (float)$row["price"] * $qty;
-    $subtotal += $row["line_total"];
-    $items[] = $row;
-}
-if (!$items) {
-    header("Location: cart.php");
-    exit;
+    $stmt = mysqli_prepare(
+        $conn,
+        "SELECT id, name, price FROM products WHERE id = ?"
+    );
+    mysqli_stmt_bind_param($stmt, "i", $productId);
+    mysqli_stmt_execute($stmt);
+    $product = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
+    mysqli_stmt_close($stmt);
+
+    if ($product) {
+        $product['quantity']      = $quantity;
+        $product['item_subtotal'] = $product['price'] * $quantity;
+
+        $cartItems[] = $product;
+        $subtotal   += $product['item_subtotal'];
+    }
 }
 
-$isCustomer = isset($_SESSION["user_id"]) && ($_SESSION["user_role"] ?? "") === "customer";
-$discount = $isCustomer ? round($subtotal * 0.10, 2) : 0;
-$total = $subtotal - $discount;
-$error = "";
+// Hitung diskon dan total (setelah subtotal terisi).
+$discount = $isCustomer ? round($subtotal * 0.10) : 0;
+$total    = $subtotal - $discount;
 
-if ($_SERVER["REQUEST_METHOD"] === "POST" && isset($_POST["place_order"])) {
-    if (!$items) {
-        $error = "Keranjang kosong atau produk tidak tersedia.";
+// Proses tombol "Buat Pesanan".
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['place_order'])) {
+
+    if (empty($cartItems)) {
+        $message = "Keranjang kosong. Tidak dapat membuat pesanan.";
     } else {
-        mysqli_begin_transaction($conn);
-        try {
-            $userId = $isCustomer ? (int)$_SESSION["user_id"] : null;
-            $status = "pending";
-            $orderStmt = mysqli_prepare($conn, "INSERT INTO orders (user_id, cashier_id, subtotal, discount, total, status) VALUES (?, NULL, ?, ?, ?, ?)");
-            mysqli_stmt_bind_param($orderStmt, "iddds", $userId, $subtotal, $discount, $total, $status);
-            if (!mysqli_stmt_execute($orderStmt)) throw new Exception("Gagal menyimpan pesanan.");
-            $orderId = mysqli_insert_id($conn);
-            mysqli_stmt_close($orderStmt);
+        $userId = $isCustomer ? (int) $_SESSION['user_id'] : null;
 
-            $itemStmt = mysqli_prepare($conn, "INSERT INTO order_items (order_id, product_id, product_name, price, quantity, subtotal) VALUES (?, ?, ?, ?, ?, ?)");
-            foreach ($items as $item) {
-                $productId = (int)$item["id"];
-                $productName = $item["name"];
-                $price = (float)$item["price"];
-                $quantity = (int)$item["quantity"];
-                $lineTotal = (float)$item["line_total"];
-                mysqli_stmt_bind_param($itemStmt, "iisdid", $orderId, $productId, $productName, $price, $quantity, $lineTotal);
-                if (!mysqli_stmt_execute($itemStmt)) throw new Exception("Gagal menyimpan detail pesanan.");
+        try {
+            mysqli_begin_transaction($conn);
+
+            $stmtOrder = mysqli_prepare(
+                $conn,
+                "INSERT INTO orders (user_id, subtotal, discount, total, status)
+                 VALUES (?, ?, ?, ?, 'pending')"
+            );
+            mysqli_stmt_bind_param($stmtOrder, "iddd", $userId, $subtotal, $discount, $total);
+            mysqli_stmt_execute($stmtOrder);
+            $orderId = mysqli_insert_id($conn);
+            mysqli_stmt_close($stmtOrder);
+
+            $stmtItem = mysqli_prepare(
+                $conn,
+                "INSERT INTO order_items
+                 (order_id, product_id, product_name, price, quantity, subtotal)
+                 VALUES (?, ?, ?, ?, ?, ?)"
+            );
+
+            foreach ($cartItems as $item) {
+                if ($item['quantity'] < 1 || $item['quantity'] > 99) {
+                    throw new Exception("Jumlah produk tidak valid.");
+                }
+
+                $pid          = (int) $item['id'];
+                $productName  = $item['name'];
+                $price        = (float) $item['price'];
+                $quantity     = (int) $item['quantity'];
+                $itemSubtotal = (float) $item['item_subtotal'];
+
+                mysqli_stmt_bind_param(
+                    $stmtItem, "iisdid",
+                    $orderId, $pid, $productName, $price, $quantity, $itemSubtotal
+                );
+                mysqli_stmt_execute($stmtItem);
             }
-            mysqli_stmt_close($itemStmt);
+
+            mysqli_stmt_close($stmtItem);
             mysqli_commit($conn);
-            unset($_SESSION["cart"]);
-            $_SESSION["last_order_id"] = $orderId;
+
+            $_SESSION['cart'] = [];
+
             header("Location: checkout.php?success=1");
             exit;
+
         } catch (Throwable $e) {
             mysqli_rollback($conn);
-            $error = "Pesanan belum berhasil disimpan: " . $e->getMessage();
+            $message = "Pesanan gagal disimpan. Silakan coba lagi.";
         }
     }
 }
+
+$pageTitle = "Checkout - Kopipiro";
+require "includes/header.php";
 ?>
-<!DOCTYPE html>
-<html lang="id"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Checkout - Kopipiro</title><link rel="stylesheet" href="assets/css/style.css"></head><body>
-<header class="topbar"><a class="brand" href="index.php">Kopipiro<span>.</span><small>COFFEE & BITES</small></a><nav class="nav-links"><a href="index.php">Beranda</a><a href="cart.php">Keranjang</a></nav></header>
-<main class="page-wrap">
-<?php if (isset($_GET["success"])): ?>
-    <div class="success-state"><div class="empty-icon">✓</div><h1>Pesanan berhasil dibuat!</h1><p>Terima kasih telah memesan di Kopipiro. Simpan nomor pesananmu: <strong>#<?= (int)($_SESSION["last_order_id"] ?? 0) ?></strong>.</p><a class="button button-primary" href="index.php">Kembali ke Beranda</a></div>
-<?php else: ?>
-    <div class="page-title"><span class="eyebrow">FINAL STEP</span><h1>Checkout</h1><p>Pastikan rincian pesananmu sudah benar.</p></div>
-    <?php if ($error): ?><div class="alert alert-error"><?= htmlspecialchars($error, ENT_QUOTES, "UTF-8") ?></div><?php endif; ?>
-    <div class="checkout-layout">
-        <section class="panel"><h2>Rincian Produk</h2>
-            <?php foreach ($items as $item): ?>
-                <div class="checkout-item"><div><strong><?= htmlspecialchars($item["name"], ENT_QUOTES, "UTF-8") ?></strong><p><?= (int)$item["quantity"] ?> × Rp<?= number_format((float)$item["price"], 0, ",", ".") ?></p></div><strong>Rp<?= number_format($item["line_total"], 0, ",", ".") ?></strong></div>
-            <?php endforeach; ?>
-        </section>
-        <aside class="panel order-summary"><h2>Ringkasan Pembayaran</h2>
-            <div class="summary-row"><span>Subtotal</span><strong>Rp<?= number_format($subtotal, 0, ",", ".") ?></strong></div>
-            <div class="summary-row"><span>Diskon <?= $isCustomer ? "(10%)" : "" ?></span><strong class="discount-text">− Rp<?= number_format($discount, 0, ",", ".") ?></strong></div>
-            <?php if (!$isCustomer): ?><p class="muted small">Kamu berbelanja sebagai tamu. Login sebagai customer untuk mendapatkan diskon 10% pada pesanan berikutnya.</p><?php endif; ?>
-            <div class="summary-total"><span>Total pembayaran</span><strong>Rp<?= number_format($total, 0, ",", ".") ?></strong></div>
-            <form method="POST"><button class="button button-primary button-block" type="submit" name="place_order">Buat Pesanan</button></form>
-            <a class="text-link centered" href="cart.php">Kembali ke keranjang</a>
-        </aside>
+
+<h1>Checkout</h1>
+
+<?php if (isset($_GET['success'])) { ?>
+
+    <div class="panel" style="text-align:center">
+        <h2>🎉 Pesanan berhasil dibuat!</h2>
+        <p>Terima kasih sudah memesan di Kopipiro.</p>
+        <p>Pesananmu sudah tersimpan dan akan segera diproses oleh kasir kami.</p>
+        <a href="index.php" class="btn">Kembali ke Menu</a>
     </div>
-<?php endif; ?>
-</main><footer class="footer">© <?= date("Y") ?> Kopipiro Coffee Shop.</footer></body></html>
+
+<?php } elseif (empty($cartItems)) { ?>
+
+    <div class="panel" style="text-align:center">
+        <p>Keranjang kamu masih kosong.</p>
+        <a href="index.php" class="btn">Kembali ke Menu</a>
+    </div>
+
+<?php } else { ?>
+
+    <div class="panel">
+        <div class="table-wrap">
+            <table>
+                <tr>
+                    <th>Produk</th>
+                    <th>Harga</th>
+                    <th>Jumlah</th>
+                    <th>Subtotal</th>
+                </tr>
+                <?php foreach ($cartItems as $item) { ?>
+                    <tr>
+                        <td><?= e($item['name']) ?></td>
+                        <td><?= rupiah($item['price']) ?></td>
+                        <td><?= (int) $item['quantity'] ?></td>
+                        <td><?= rupiah($item['item_subtotal']) ?></td>
+                    </tr>
+                <?php } ?>
+            </table>
+        </div>
+
+        <div class="summary-line">
+            <span>Subtotal</span>
+            <span><?= rupiah($subtotal) ?></span>
+        </div>
+
+        <div class="summary-line <?= $isCustomer ? 'discount' : '' ?>">
+            <span>Diskon <?= $isCustomer ? '10%' : '0%' ?></span>
+            <span>- <?= rupiah($discount) ?></span>
+        </div>
+
+        <div class="summary-total">
+            <span>Total Pembayaran</span>
+            <span><?= rupiah($total) ?></span>
+        </div>
+
+        <?php if (!$isCustomer) { ?>
+            <p style="margin-top:14px">
+                💡 <a href="login.php">Login</a> atau
+                <a href="register.php">daftar</a> sebagai pelanggan untuk
+                mendapat diskon 10%.
+            </p>
+        <?php } ?>
+
+        <form action="checkout.php" method="POST" class="actions">
+            <a href="cart.php" class="btn btn-outline">← Kembali ke Keranjang</a>
+            <button type="submit" name="place_order">Buat Pesanan</button>
+        </form>
+    </div>
+
+<?php } ?>
+
+<?php require "includes/footer.php"; ?>

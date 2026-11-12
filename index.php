@@ -35,6 +35,34 @@ if ($selected !== '') {
     );
 }
 
+// ---- Konsumsi API publik Open-Meteo ----
+require_once "includes/weather.php";
+
+$cuaca    = getCuaca();
+$suhu     = null;
+$angin    = null;
+$isHot    = false;
+$saranMinuman = [];
+
+if (!isset($cuaca['error'])) {
+    $suhu  = (float) $cuaca['current']['temperature_2m'];
+    $angin = (float) ($cuaca['current']['wind_speed_10m'] ?? 0);
+    $isHot = $suhu >= HOT_THRESHOLD;
+
+    // Jika panas, ambil 3 minuman non kopi acak sebagai saran.
+    if ($isHot) {
+        $sug = mysqli_query(
+            $conn,
+            "SELECT id, name, price FROM products
+             WHERE category = 'Non Kopi'
+             ORDER BY RAND() LIMIT 3"
+        );
+        while ($s = mysqli_fetch_assoc($sug)) {
+            $saranMinuman[] = $s;
+        }
+    }
+}
+
 $pageTitle = "Kopipiro Coffee Shop";
 require "includes/header.php";
 ?>
@@ -49,6 +77,47 @@ require "includes/header.php";
         </p>
         <a href="#menu" class="hero-button">Jelajahi Menu</a>
     </div>
+</section>
+
+<!-- INFO CUACA (API Open-Meteo) -->
+<section>
+    <?php if (isset($cuaca['error'])) { ?>
+
+        <p class="weather-error">
+            Info cuaca sedang tidak tersedia
+            (<?= e($cuaca['error']) ?>).
+        </p>
+
+    <?php } else { ?>
+
+        <div class="weather-banner <?= $isHot ? 'hot' : '' ?>">
+            <div class="weather-temp">
+                <?= $isHot ? '☀️' : '🌤️' ?>
+                <strong><?= e(number_format($suhu, 1)) ?> °C</strong>
+            </div>
+
+            <div class="weather-text">
+                <h3>Cuaca di <?= e(SHOP_CITY) ?> saat ini</h3>
+                <p>Kecepatan angin <?= e(number_format($angin, 1)) ?> km/jam</p>
+
+                <?php if ($isHot) { ?>
+                    <p class="weather-tip">
+                        Cuaca sedang panas! Coba segarkan harimu dengan minuman dingin:
+                    </p>
+                    <div class="weather-suggest">
+                        <?php foreach ($saranMinuman as $s) { ?>
+                            <a href="#menu"><?= e($s['name']) ?> · <?= rupiah($s['price']) ?></a>
+                        <?php } ?>
+                    </div>
+                <?php } else { ?>
+                    <p class="weather-tip">
+                        Cuaca nyaman, waktu yang pas untuk secangkir kopi hangat ☕
+                    </p>
+                <?php } ?>
+            </div>
+        </div>
+
+    <?php } ?>
 </section>
 
 <?php if (!in_array($_SESSION['user_role'] ?? '', ['owner', 'cashier'], true)) { ?>

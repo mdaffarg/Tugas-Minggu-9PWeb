@@ -357,3 +357,41 @@ td input[type="number"] { width: 80px; }
     .panel { padding: 16px; }
 }
 
+/* ---------- INFO CUACA ---------- */
+.weather-banner {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    background: #fff;
+    border: 1px solid var(--line);
+    border-left: 6px solid var(--brown);
+    border-radius: var(--radius);
+    padding: 20px 26px;
+    margin: 26px 0 0;
+    box-shadow: var(--shadow);
+}
+.weather-banner.hot {
+    border-left-color: var(--caramel);
+    background: linear-gradient(90deg, #fff4e5, #fff);
+}
+.weather-temp { font-size: 22px; text-align: center; min-width: 110px; }
+.weather-temp strong { display: block; font-size: 30px; color: var(--espresso); }
+.weather-text h3 { margin: 0 0 4px; }
+.weather-text p { margin: 2px 0; color: var(--muted); font-size: 14px; }
+.weather-tip { color: var(--brown) !important; font-weight: 500; }
+.weather-suggest { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.weather-suggest a {
+    background: var(--caramel);
+    color: #fff;
+    text-decoration: none;
+    padding: 5px 14px;
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 500;
+}
+.weather-suggest a:hover { background: #b0733a; }
+.weather-error { text-align: center; color: var(--muted); font-size: 13px; margin: 20px 0 0; }
+
+@media (max-width: 600px) {
+    .weather-banner { flex-direction: column; text-align: center; }
+}

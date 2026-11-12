@@ -1,0 +1,7 @@
+## API Eksternal yang Digunakan
+- Nama      : Open-Meteo (Public API, tanpa API key)
+- Endpoint  : GET https://api.open-meteo.com/v1/forecast
+- Parameter : latitude, longitude, current=temperature_2m,wind_speed_10m
+- Dipakai di: index.php (via includes/weather.php)
+- Fungsi    : Menampilkan cuaca toko dan menyarankan minuman dingin jika suhu >= 30°C
+- Error     : timeout/HTTP non-200/JSON tidak valid -> tampil pesan "info cuaca tidak tersedia"
